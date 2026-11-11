@@ -1,5 +1,8 @@
 # ncmdump GUI
 
+[![Release](https://img.shields.io/github/v/release/delete-rm/ncmdump-gui?style=flat-square)](https://github.com/delete-rm/ncmdump-gui/releases/latest)
+[![License](https://img.shields.io/github/license/delete-rm/ncmdump-gui?style=flat-square)](LICENSE)
+
 macOS 上把网易云音乐 `.ncm` 批量转成 `mp3` / `flac` 的原生图形界面，单文件 Objective-C + AppKit，无第三方运行时依赖。
 
 内核是 [taurusxin/ncmdump](https://github.com/taurusxin/ncmdump) 1.5.0（静态版，已内置），本仓库只负责界面、队列、重试与安全删源。
