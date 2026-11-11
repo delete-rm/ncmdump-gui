@@ -1,6 +1,7 @@
 # ncmdump GUI
 
 [![Release](https://img.shields.io/github/v/release/delete-rm/ncmdump-gui?style=flat-square)](https://github.com/delete-rm/ncmdump-gui/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/delete-rm/ncmdump-gui/ci.yml?style=flat-square&label=ci)](https://github.com/delete-rm/ncmdump-gui/actions)
 [![License](https://img.shields.io/github/license/delete-rm/ncmdump-gui?style=flat-square)](LICENSE)
 
 macOS 上把网易云音乐 `.ncm` 批量转成 `mp3` / `flac` 的原生图形界面，单文件 Objective-C + AppKit，无第三方运行时依赖。
@@ -14,9 +15,12 @@ macOS 上把网易云音乐 `.ncm` 批量转成 `mp3` / `flac` 的原生图形�
 - 拖拽 `.ncm` 文件或文件夹到窗口即排队转换，文件夹会递归子目录
 - Finder 右键「打开方式」→ ncmdump；双击 `.ncm` 也能冷启动并立刻开始转换
 - **转换后删除源文件**（默认关闭，且仅在确认产出文件后才删）
-- 自选输出目录（默认输出到源文件同目录）
+- 自选输出目录（默认输出到源文件同目录），**并保留拖入文件夹的子目录结构**
 - 失败自动重试 0–5 次，另有「重试失败 (N)」按钮手动重跑
-- 批量进度条 + 逐条日志 + `成功 / 失败 / 队列` 状态统计
+- 批量进度条 + 逐条日志 + `转换中 / 已处理 / 成功 / 失败 / 队列` 状态统计
+- 整批完成时播放提示音，窗口在后台会弹 Dock 图标
+- 日志同时落盘到 `~/Library/Logs/ncmdump-gui.log`（超过 4 MB 自动清空）
+- 记住窗口尺寸
 - 设置通过 `NSUserDefaults` 持久化（域：`local.ncmdump.gui`）
 - universal2（arm64 + x86_64），内置的 ncmdump 同样是 universal
 
@@ -78,6 +82,7 @@ main.m                  全部界面与逻辑（DropView / Controller / AppDeleg
 icon.m                  用 SF Symbol + 渐变生成图标，build.sh 里转成 .icns
 vendor/ncmdump          ncmdump 1.5.0 内核（universal）—— 构建时自动下载，已 gitignore，不入库
 vendor/ncmdump.LICENSE.txt   上游 MIT 许可证与来源说明（随仓库分发，构建时也拷进 App）
+.github/workflows/      CI：push/PR 冒烟构建；推 v* 标签自动打包并发 Release
 build.sh                编译（arm64 + x86_64 → lipo）+ 打包 + 签名 + 注册
 docs/screenshot.png     界面截图
 ```
@@ -107,9 +112,21 @@ docs/screenshot.png     界面截图
 
 ## 已知限制
 
-- 指定输出目录时产物是平铺的：不同子目录里**同名**的 ncm 会互相覆盖
-- 日志只在窗口里，不落盘
+- 日志文件超过 4 MB 会被直接清空，不做归档
 - 只支持 `.ncm`，不处理 qmc / mflac 等其它平台格式
+
+## 自动发布
+
+仓库带了 GitHub Actions：
+
+- `.github/workflows/ci.yml` —— 每次 push / PR 在 macOS runner 上构建一次并做冒烟检查
+- `.github/workflows/release.yml` —— 推一个 `v*` 标签，自动构建 universal2 包并挂到 Release
+
+```bash
+git tag v1.4 && git push origin v1.4
+```
+
+不用本地打包，也不用手动传 zip。构建脚本里的内核下载带 SHA256 校验，被篡改会直接失败。
 
 ## 第三方组件
 

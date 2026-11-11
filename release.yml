@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal2 app
+        run: |
+          chmod +x build.sh
+          APP_VERSION="${GITHUB_REF_NAME#v}" ./build.sh --no-launch --zip "$RUNNER_TEMP/ncmdump.app"
+
+      - name: Verify output
+        run: |
+          ls -lh build/ncmdump.app.zip
+          lipo -info "$RUNNER_TEMP/ncmdump.app/Contents/MacOS/NCMDump"
+          lipo -info "$RUNNER_TEMP/ncmdump.app/Contents/Resources/ncmdump"
+          codesign -v "$RUNNER_TEMP/ncmdump.app"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/ncmdump.app.zip
+          generate_release_notes: true
+          body: |
+            macOS 12+ · universal2（Apple Silicon / Intel）
+            内置 ncmdump 内核，无需 Homebrew / ffmpeg。
+
+            首次打开若提示"无法验证开发者"：右键点 App → 打开，或执行
+            `xattr -dr com.apple.quarantine /Applications/ncmdump.app`

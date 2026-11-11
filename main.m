@@ -34,6 +34,7 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
 
 @interface Job : NSObject
 @property (nonatomic, copy) NSString *path;
+@property (nonatomic, copy) NSString *baseDir;   // 拖入目录时的根，用于保留子目录结构
 @property (nonatomic, assign) NSInteger attempts;
 @property (nonatomic, assign) BOOL finished;
 @property (nonatomic, assign) BOOL failed;
@@ -160,6 +161,9 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
 @property (nonatomic, strong) NSButton *deleteCheck;
 @property (nonatomic, strong) NSButton *outputCheck;
 @property (nonatomic, strong) NSButton *retryButton;
+@property (nonatomic, strong) NSButton *clearButton;
+@property (nonatomic, copy) NSString *currentName;
+@property (nonatomic, assign) BOOL notified;
 @property (nonatomic, strong) NSStepper *retryStepper;
 @property (nonatomic, strong) NSTextField *retryLabel;
 
@@ -234,6 +238,7 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
     self.window.title = kAppTitle;
     self.window.minSize = NSMakeSize(620, H);
     [self.window center];
+    [self.window setFrameAutosaveName:@"NCMWindowFrame"];
 
     NSView *content = self.window.contentView;
 
@@ -305,11 +310,12 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
     self.retryButton.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
     [content addSubview:self.retryButton];
 
-    NSButton *clear = [NSButton buttonWithTitle:@"清空" target:self action:@selector(clearLog:)];
-    clear.frame = NSMakeRect(236, 32, 60, 26);
-    clear.bezelStyle = NSBezelStyleRounded;
-    clear.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
-    [content addSubview:clear];
+    self.clearButton = [NSButton buttonWithTitle:@"清空" target:self action:@selector(clearLog:)];
+    self.clearButton.frame = NSMakeRect(236, 32, 60, 26);
+    self.clearButton.bezelStyle = NSBezelStyleRounded;
+    self.clearButton.enabled = NO;
+    self.clearButton.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
+    [content addSubview:self.clearButton];
 
     self.retryLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(306, 36, 130, 18)];
     self.retryLabel.editable = NO;
@@ -363,6 +369,38 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
                color:[NSColor secondaryLabelColor]];
 }
 
+- (void)writeToLogFile:(NSString *)text {
+    static NSString *path = nil;
+    static NSDateFormatter *fmt = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *dir = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        path = [dir stringByAppendingPathComponent:@"ncmdump-gui.log"];
+        fmt = [NSDateFormatter new];
+        fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    });
+
+    NSString *clean = [text stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    if (clean.length == 0) return;
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [fmt stringFromDate:[NSDate date]], clean];
+
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+    if ([attrs fileSize] > 4 * 1024 * 1024) {
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    }
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!fh) {
+        [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
+        fh = [NSFileHandle fileHandleForWritingAtPath:path];
+    }
+    if (fh) {
+        [fh seekToEndOfFile];
+        [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+        [fh closeFile];
+    }
+}
+
 - (void)appendLog:(NSString *)text color:(NSColor *)color {
     NSAttributedString *s = [[NSAttributedString alloc] initWithString:text attributes:@{
         NSFontAttributeName: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular],
@@ -370,6 +408,7 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
     }];
     [[self.logView textStorage] appendAttributedString:s];
     [self.logView scrollToEndOfDocument:nil];
+    [self writeToLogFile:text];
 }
 
 #pragma mark Actions
@@ -454,6 +493,7 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
 }
 
 - (void)clearLog:(id)sender {
+    if (self.busy) { NSBeep(); return; }
     [[self.logView textStorage] setAttributedString:[[NSAttributedString alloc] initWithString:@""]];
     [self.known removeAllObjects];
     [self.failedJobs removeAllObjects];
@@ -470,6 +510,9 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
     NSFileManager *fm = [NSFileManager defaultManager];
     NSMutableArray<NSString *> *newItems = [NSMutableArray array];
 
+    NSMutableDictionary<NSString *, NSString *> *baseOf = [NSMutableDictionary dictionary];
+    NSInteger skipped = 0;
+
     for (NSString *p in paths) {
         BOOL isDir = NO;
         if (![fm fileExistsAtPath:p isDirectory:&isDir]) continue;
@@ -478,11 +521,19 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
             NSDirectoryEnumerator *e = [fm enumeratorAtPath:p];
             for (NSString *rel in e) {
                 if ([[rel pathExtension].lowercaseString isEqualToString:@"ncm"]) {
-                    [newItems addObject:[p stringByAppendingPathComponent:rel]];
+                    NSString *full = [p stringByAppendingPathComponent:rel];
+                    [newItems addObject:full];
+                    baseOf[full] = p;          // 记住所属根目录
+                } else {
+                    BOOL isSub = NO;
+                    NSString *full = [p stringByAppendingPathComponent:rel];
+                    if ([fm fileExistsAtPath:full isDirectory:&isSub] && !isSub) skipped++;
                 }
             }
         } else if ([[p pathExtension].lowercaseString isEqualToString:@"ncm"]) {
             [newItems addObject:p];
+        } else {
+            skipped++;
         }
     }
 
@@ -492,6 +543,7 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
         [self.known addObject:p];
         Job *job = [Job new];
         job.path = p;
+        job.baseDir = baseOf[p];
         [self.pending addObject:job];
         added++;
     }
@@ -499,12 +551,18 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
     if (added == 0) {
         if (newItems.count == 0) {
             NSBeep();
-            [self appendLog:@"没有找到 .ncm 文件\n" color:[NSColor systemRedColor]];
+            if (skipped > 0) {
+                [self appendLog:[NSString stringWithFormat:@"没有找到 .ncm 文件（已跳过 %ld 个其它文件）\n", (long)skipped]
+                          color:[NSColor systemOrangeColor]];
+            } else {
+                [self appendLog:@"没有找到 .ncm 文件（只支持网易云下载的 .ncm）\n" color:[NSColor systemRedColor]];
+            }
         }
         return;
     }
 
     self.totalCount += added;
+    self.notified = NO;
     [self appendLog:[NSString stringWithFormat:@"加入 %ld 个任务\n", (long)added] color:[NSColor secondaryLabelColor]];
     [self updateStatus];
     [self pump];
@@ -527,6 +585,18 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
     NSString *name = path.lastPathComponent;
     NSString *sourceDir = [path stringByDeletingLastPathComponent];
     NSString *outDir = [self outputDir];
+    self.currentName = name;
+
+    // 指定输出目录时，按拖入时的根目录保留子目录结构，避免同名文件互相覆盖
+    NSString *targetDir = outDir ? outDir : sourceDir;
+    if (outDir && job.baseDir.length > 0 && path.length > job.baseDir.length) {
+        NSString *rel = [path substringFromIndex:job.baseDir.length];
+        while ([rel hasPrefix:@"/"]) rel = [rel substringFromIndex:1];
+        NSString *sub = [rel stringByDeletingLastPathComponent];
+        if (sub.length > 0) {
+            targetDir = [outDir stringByAppendingPathComponent:sub];
+        }
+    }
 
     if (job.attempts > 1) {
         [self appendLog:[NSString stringWithFormat:@"↻ 重试 %ld/%ld %@\n", (long)(job.attempts - 1),
@@ -537,7 +607,7 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
     }
 
     if (outDir) {
-        [[NSFileManager defaultManager] createDirectoryAtPath:outDir
+        [[NSFileManager defaultManager] createDirectoryAtPath:targetDir
                                   withIntermediateDirectories:YES
                                                    attributes:nil
                                                         error:nil];
@@ -558,7 +628,6 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
         NSString *produced = nil;
         NSDate *startedAt = [NSDate dateWithTimeIntervalSinceNow:-2.0];
 
-        NSString *targetDir = outDir ? outDir : sourceDir;
         NSString *stem = [path.lastPathComponent stringByDeletingPathExtension];
 
         if (!bin) {
@@ -567,7 +636,7 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
             task.executableURL = bin;
             NSMutableArray *args = [NSMutableArray arrayWithObject:path];
             if (outDir) {
-                [args addObjectsFromArray:@[ @"-o", outDir ]];
+                [args addObjectsFromArray:@[ @"-o", targetDir ]];
             }
             task.arguments = args;
 
@@ -614,6 +683,11 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
                                           : @"转换失败：未生成输出文件";
                 }
                 if (shown.length > 160) shown = [NSString stringWithFormat:@"%@…", [shown substringToIndex:160]];
+                if ([shown containsString:@"Not netease protected file"]) {
+                    shown = @"不是有效的 ncm 文件（可能已损坏，或不是网易云下载的）";
+                } else if ([shown containsString:@"missing album"]) {
+                    shown = @"转换成功，但缺少专辑信息，封面图未写入";
+                }
 
                 if (job.attempts - 1 < maxRetries) {
                     [me appendLog:[NSString stringWithFormat:@"  ! 失败，将自动重试：%@\n", shown]
@@ -649,6 +723,8 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
     if (self.totalCount == 0) {
         self.statusLabel.stringValue = @"就绪";
         self.dropView.note = nil;
+        self.clearButton.enabled = NO;
+        self.currentName = nil;
         return;
     }
 
@@ -656,6 +732,9 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
     NSInteger ok = self.finishedCount - failed;
 
     NSMutableArray *bits = [NSMutableArray array];
+    if (self.busy && self.currentName.length > 0) {
+        [bits addObject:[NSString stringWithFormat:@"转换中 %@", self.currentName]];
+    }
     [bits addObject:[NSString stringWithFormat:@"%ld/%ld", (long)self.finishedCount, (long)self.totalCount]];
     if (ok > 0) [bits addObject:[NSString stringWithFormat:@"成功 %ld", (long)ok]];
     if (failed > 0) [bits addObject:[NSString stringWithFormat:@"失败 %ld", (long)failed]];
@@ -665,6 +744,21 @@ static NSString *FindProducedFile(NSString *dir, NSString *stem, NSDate *since) 
     self.dropView.note = queued > 0
         ? [NSString stringWithFormat:@"正在处理，队列还有 %ld 个", (long)queued]
         : @"点这里选择文件 · 转换在后台顺序进行";
+
+    self.clearButton.enabled = !self.busy;
+
+    // 整批完成时提醒一下（窗口在后台时弹 Dock）
+    if (!self.busy && queued == 0 && self.totalCount > 0 &&
+        self.finishedCount >= self.totalCount && !self.notified) {
+        self.notified = YES;
+        self.currentName = nil;
+        if (self.totalCount > 1) {
+            if (![NSApp isActive]) {
+                [NSApp requestUserAttention:NSInformationalRequest];
+            }
+            [[NSSound soundNamed:@"Glass"] play];
+        }
+    }
 }
 
 #pragma mark DropViewDelegate

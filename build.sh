@@ -23,6 +23,17 @@ DEST="$HOME/Applications/ncmdump.app"
 LAUNCH=1
 MAKE_ZIP=0
 NCM_VER="${NCM_VER:-1.5.0}"
+APP_VERSION="${APP_VERSION:-1.4}"
+
+# 内置内核的 SHA256（用于校验下载完整性；换版本时同步更新）
+case "$NCM_VER" in
+  1.5.0)
+    SHA_arm64="3d059dcf53f4dbacd9442b443d23152e69b28ddba318e3435e2ddb282c040e2c"
+    SHA_x86_64="b5efa23644645746965dd2b4eed66c581c0904212d46e7fce676f3a2d2b3e16e"
+    ;;
+  *)
+    SHA_arm64=""; SHA_x86_64="" ;;
+esac
 NCM_URL_PREFIX="${NCM_URL_PREFIX:-https://github.com/taurusxin/ncmdump/releases/download}"
 
 for arg in "$@"; do
@@ -65,6 +76,17 @@ else
             echo "  · 或手动下载 ncmdump-$NCM_VER-darwin-{arm64,x86_64}.tar.gz，解压后："
             echo "      lipo -create -output vendor/ncmdump <arm64/ncmdump> <x86_64/ncmdump> && chmod +x vendor/ncmdump"
             exit 1
+        fi
+        want=""
+        eval "want=\$SHA_$arch"
+        if [ -n "$want" ]; then
+            got=$(shasum -a 256 "$TMP/$arch.tar.gz" | cut -d' ' -f1)
+            if [ "$got" != "$want" ]; then
+                echo "校验失败（$arch）：期望 $want，实际 $got"
+                echo "下载文件可能被篡改或上游重新打包，已中止。"
+                exit 1
+            fi
+            echo "    ✓ $arch 校验通过"
         fi
         tar xzf "$TMP/$arch.tar.gz" -C "$TMP/$arch"
     done
@@ -122,8 +144,8 @@ cat > "$DEST/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key><string>icon</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.3</string>
-    <key>CFBundleVersion</key><string>3</string>
+    <key>CFBundleShortVersionString</key><string>$APP_VERSION</string>
+    <key>CFBundleVersion</key><string>$APP_VERSION</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
@@ -154,7 +176,7 @@ if [ "$MAKE_ZIP" = "1" ]; then
     echo "==> Release 包：$ZIP"
 fi
 
-echo "==> 完成：$DEST"
+echo "==> 完成：$DEST（版本 $APP_VERSION）"
 
 if [ "$LAUNCH" = "1" ]; then
     open "$DEST"
