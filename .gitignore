@@ -1,0 +1,4 @@
+build/
+vendor/ncmdump
+vendor/*.tar.gz
+.DS_Store
